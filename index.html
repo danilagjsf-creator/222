@@ -35,6 +35,7 @@
   #gain { position: absolute; right: 0; top: -26px; font-weight: 800; color: #ffd34d; opacity: 0; font-size: 18px; }
   #gain.show { animation: gain 1.6s ease-out; }
   @keyframes gain { 0% { opacity: 0; transform: translateY(8px); } 20% { opacity: 1; } 100% { opacity: 0; transform: translateY(-14px); } }
+  #mute { position: fixed; top: 12px; right: 12px; z-index: 10; width: 44px; height: 44px; border: 0; border-radius: 50%; font-size: 22px; background: rgba(255,255,255,.16); color: #fff; cursor: pointer; }
   #counts { display: flex; gap: 22px; font-size: 17px; font-weight: 600; }
   #counts b { color: #ffd34d; }
   #prize { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: rgba(15,10,40,.92); color: #fff; font-family: -apple-system,"SF Pro Display",Roboto,sans-serif; text-align: center; z-index: 5; }
@@ -70,6 +71,7 @@
   <button class="btn gold" id="btnOpen">Открыть ящик</button>
   <button class="btn alt hidden" id="btnMenu">В главное меню</button>
 </div>
+<button id="mute">🔊</button>
 <div id="prize" class="hidden">
   <small>Тебе выпало</small>
   <div id="prizeName"></div>
@@ -106,6 +108,87 @@
     if (tg && tg.CloudStorage) tg.CloudStorage.setItem('best', String(best));
   }
   function haptic(t) { try { tg.HapticFeedback.impactOccurred(t); } catch (e) {} }
+
+  // ---- звук (синтезируется на лету, файлы не нужны) ----
+  var AC = null, muted = false, combo = 0;
+  try { muted = localStorage.getItem('stack_mute') === '1'; } catch (e) {}
+  function ac() {
+    if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+    if (AC && AC.state === 'suspended') AC.resume();
+    return AC;
+  }
+  function tone(freq, dur, type, vol, when, slideTo) {
+    if (muted) return;
+    var a = ac(); if (!a) return;
+    var t = a.currentTime + (when || 0), o = a.createOscillator(), g = a.createGain();
+    o.type = type || 'sine';
+    o.frequency.setValueAtTime(freq, t);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol || 0.2, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(a.destination); o.start(t); o.stop(t + dur + 0.03);
+  }
+  function noise(dur, vol) {
+    if (muted) return;
+    var a = ac(); if (!a) return;
+    var n = Math.floor(a.sampleRate * dur), buf = a.createBuffer(1, n, a.sampleRate), d = buf.getChannelData(0);
+    for (var i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    var src = a.createBufferSource(), g = a.createGain(), f = a.createBiquadFilter();
+    f.type = 'lowpass'; f.frequency.value = 1400; g.gain.value = vol;
+    src.buffer = buf; src.connect(f); f.connect(g); g.connect(a.destination); src.start();
+  }
+  // ---- музыка и звук проигрыша (файлы лежат рядом с index.html) ----
+  var music = new Audio('music.mp3'); music.loop = true; music.volume = 0.5; music.preload = 'auto';
+  var loseSnd = new Audio('lose.mp3'); loseSnd.preload = 'auto';
+  function safePlay(a) { try { var p = a.play(); if (p && p.catch) p.catch(function () {}); } catch (e) {} }
+  function musicOn() { if (!muted) safePlay(music); }
+  function musicOff() { music.pause(); }
+  function playLose() { if (muted) return; try { loseSnd.currentTime = 0; } catch (e) {} safePlay(loseSnd); }
+  function unlockLose() {                       // iOS разрешает звук только после касания — «прогреваем» заранее
+    loseSnd.muted = true;
+    var p = loseSnd.play();
+    var done = function () { loseSnd.pause(); try { loseSnd.currentTime = 0; } catch (e) {} loseSnd.muted = false; };
+    if (p && p.then) p.then(done, function () { loseSnd.muted = false; }); else done();
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) musicOff(); else if (state === 'play') musicOn();
+  });
+  var STEPS = [0, 2, 4, 7, 9, 12, 14, 16];
+  var SFX = {
+    click: function () { tone(700, .06, 'triangle', .12); },
+    cut: function () { tone(170, .14, 'sine', .32, 0, 60); noise(.14, .12); },
+    perfect: function (n) {
+      var f = 440 * Math.pow(2, STEPS[Math.min(n - 1, 7)] / 12);
+      tone(f, .28, 'sine', .26); tone(f * 2, .22, 'triangle', .08);
+    },
+    fail: function () { tone(320, .55, 'sawtooth', .14, 0, 80); noise(.45, .14); },
+    tick: function (p) { tone(500 + p * 700, .03, 'square', .035); },
+    rumble: function () { tone(85, .95, 'sawtooth', .1, 0, 45); noise(.9, .05); },
+    open: function () {
+      tone(300, .3, 'triangle', .12, 0, 650);
+      [784, 988, 1175, 1568].forEach(function (f, i) { tone(f, .22, 'sine', .15, .12 + i * .09); });
+    },
+    win: function () {
+      [523, 659, 784, 1047, 1319].forEach(function (f, i) { tone(f, .3, 'triangle', .18, i * .09); });
+      tone(1047, .7, 'sine', .14, .5); tone(1319, .7, 'sine', .12, .5); tone(1568, .7, 'sine', .12, .5);
+    }
+  };
+  document.addEventListener('click', function (e) {
+    if (e.target.closest && e.target.closest('.btn')) SFX.click();
+  });
+  window.addEventListener('pointerdown', ac);
+  var muteBtn = document.getElementById('mute');
+  function renderMute() { muteBtn.textContent = muted ? '🔇' : '🔊'; }
+  muteBtn.addEventListener('pointerdown', function (e) { e.stopPropagation(); });
+  muteBtn.addEventListener('click', function () {
+    muted = !muted;
+    try { localStorage.setItem('stack_mute', muted ? '1' : '0'); } catch (e) {}
+    renderMute();
+    if (muted) { musicOff(); loseSnd.pause(); } else { SFX.click(); if (state === 'play') musicOn(); }
+  });
+  renderMute();
+
 
   // ---- состояние ----
   var stack, cur, debris, score, over, overAt, cam, last;
@@ -158,10 +241,11 @@
   }
   function animateXP(from, to, dur, cb) {       // плавное наполнение полоски
     cancelAnimationFrame(anim);
-    var t0 = performance.now();
+    var t0 = performance.now(), lastTick = -1;
     (function step(t) {
       var p = Math.min((t - t0) / dur, 1), e = 1 - Math.pow(1 - p, 3);
       setBar(from + (to - from) * e);
+      if (to > from && p < 1) { var k2 = Math.floor((from + (to - from) * e) / 4); if (k2 !== lastTick) { lastTick = k2; SFX.tick(p); } }
       if (p < 1) anim = requestAnimationFrame(step); else { setBar(to); if (cb) cb(); }
     })(t0);
   }
@@ -187,19 +271,19 @@
     }, 700);
   }
 
-  btnPlay.addEventListener('click', function () { reset(); state = 'play'; ui.classList.add('hidden'); });
+  btnPlay.addEventListener('click', function () { reset(); state = 'play'; ui.classList.add('hidden'); unlockLose(); musicOn(); });
   btnMenu.addEventListener('click', function () { reset(); state = 'menu'; showMenu('menu', xp); });
   btnOpen.addEventListener('click', function () {
     if (xp < XP_NEED || chest.classList.contains('shake')) return;
     openedFrom = xp; xp -= XP_NEED; saveXP();
     var name = Math.random() < 0.5 ? 'Минет' : 'Отлиз';   // 50 / 50
     btnOpen.disabled = true;
-    chest.classList.remove('ready'); chest.classList.add('shake'); haptic('heavy');
+    chest.classList.remove('ready'); chest.classList.add('shake'); SFX.rumble(); haptic('heavy');
     setTimeout(function () {
-      chest.classList.remove('shake'); chest.classList.add('open'); haptic('medium');
+      chest.classList.remove('shake'); chest.classList.add('open'); SFX.open(); haptic('medium');
       setTimeout(function () {
         if (name === 'Минет') prizes.m++; else prizes.o++;
-        savePrizes(); renderCounts();
+        savePrizes(); renderCounts(); SFX.win();
         prizeName.textContent = name; prize.classList.remove('hidden');
       }, 900);
     }, 950);
@@ -218,7 +302,7 @@
 
   function reset() {
     stack = [{ x: -START / 2, z: -START / 2, w: START, d: START, level: 0 }];
-    debris = []; score = 0; over = false;
+    debris = []; score = 0; over = false; combo = 0;
     cam = { x: 0, z: 0, y: 0 };
     spawn();
   }
@@ -244,12 +328,13 @@
       if (score > best) { best = score; saveBest(); }
       xpBefore = xp; xp += score; saveXP();     // XP = счёт
       state = 'over'; showOver();
-      haptic('heavy');
+      musicOff(); playLose(); haptic('heavy');
       return;
     }
 
     if (Math.abs(delta) < SNAP) {             // идеально — без потерь
       cur[a] = top[a];
+      combo++; SFX.perfect(combo);
       haptic('light');
     } else {                                  // отламываем кусок с той стороны, куда промахнулись
       var cut = { x: cur.x, z: cur.z, w: cur.w, d: cur.d, level: cur.level, y: cur.level * BLOCK_H, vy: 0 };
@@ -262,6 +347,7 @@
         cur[size] = overlap;
       }
       debris.push(cut);
+      combo = 0; SFX.cut();
       haptic('medium');
     }
     stack.push({ x: cur.x, z: cur.z, w: cur.w, d: cur.d, level: cur.level });
