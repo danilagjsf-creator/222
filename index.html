@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Stack</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1f4a; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(function () {
+  var tg = window.Telegram && Telegram.WebApp;
+  if (tg) { tg.ready(); tg.expand(); try { tg.disableVerticalSwipes(); } catch (e) {} }
+
+  var cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  var W, H, dpr, K;
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = W * dpr; cv.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    K = Math.min(W / 600, H / 900);
+  }
+  window.addEventListener('resize', resize); resize();
+
+  // ---- настройки ----
+  var BLOCK_H = 24, START = 200, AMP = 240, SNAP = 5;
+  var best = 0;
+  try { best = parseInt(localStorage.getItem('stack_best') || '0', 10) || 0; } catch (e) {}
+  if (tg && tg.CloudStorage) {
+    tg.CloudStorage.getItem('best', function (err, v) {
+      var n = parseInt(v || '0', 10) || 0;
+      if (!err && n > best) best = n;
+    });
+  }
+  function saveBest() {
+    try { localStorage.setItem('stack_best', String(best)); } catch (e) {}
+    if (tg && tg.CloudStorage) tg.CloudStorage.setItem('best', String(best));
+  }
+  function haptic(t) { try { tg.HapticFeedback.impactOccurred(t); } catch (e) {} }
+
+  // ---- состояние ----
+  var stack, cur, debris, score, over, overAt, cam, last;
+
+  function color(level, shade) {
+    var hue = (325 + level * 5) % 360;
+    var l = shade === 0 ? 62 : shade === 1 ? 48 : 38;
+    return 'hsl(' + hue + ',72%,' + l + '%)';
+  }
+
+  function reset() {
+    stack = [{ x: -START / 2, z: -START / 2, w: START, d: START, level: 0 }];
+    debris = []; score = 0; over = false;
+    cam = { x: 0, z: 0, y: 0 };
+    spawn();
+  }
+
+  function spawn() {
+    var top = stack[stack.length - 1];
+    var level = stack.length;
+    var axis = level % 2 === 1 ? 'x' : 'z';
+    cur = { x: top.x, z: top.z, w: top.w, d: top.d, level: level, axis: axis, dir: 1 };
+    cur[axis] = top[axis] - AMP;
+  }
+
+  function drop() {
+    if (over) { if (performance.now() - overAt > 500) reset(); return; }
+    var top = stack[stack.length - 1], a = cur.axis;
+    var size = a === 'x' ? 'w' : 'd';
+    var delta = cur[a] - top[a];
+    var overlap = cur[size] - Math.abs(delta);
+
+    if (overlap <= 0) {                       // промах — блок падает целиком
+      debris.push({ x: cur.x, z: cur.z, w: cur.w, d: cur.d, level: cur.level, y: cur.level * BLOCK_H, vy: 0 });
+      cur = null; over = true; overAt = performance.now();
+      if (score > best) { best = score; saveBest(); }
+      haptic('heavy');
+      return;
+    }
+
+    if (Math.abs(delta) < SNAP) {             // идеально — без потерь
+      cur[a] = top[a];
+      haptic('light');
+    } else {                                  // отламываем кусок с той стороны, куда промахнулись
+      var cut = { x: cur.x, z: cur.z, w: cur.w, d: cur.d, level: cur.level, y: cur.level * BLOCK_H, vy: 0 };
+      if (delta < 0) {                        // выступает в минус
+        cut[size] = -delta;
+        cur[size] = overlap; cur[a] = top[a];
+      } else {                                // выступает в плюс
+        cut[a] = top[a] + top[size];
+        cut[size] = delta;
+        cur[size] = overlap;
+      }
+      debris.push(cut);
+      haptic('medium');
+    }
+    stack.push({ x: cur.x, z: cur.z, w: cur.w, d: cur.d, level: cur.level });
+    score++;
+    spawn();
+  }
+
+  // ---- отрисовка ----
+  function P(x, z, y) {
+    return [W / 2 + ((x - cam.x) - (z - cam.z)) * 0.866 * K,
+            H * 0.64 + ((x - cam.x) + (z - cam.z)) * 0.5 * K - (y - cam.y) * K];
+  }
+  function poly(pts, fill) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (var i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+  }
+  function box(b, y, alpha) {
+    var y1 = y + BLOCK_H, x2 = b.x + b.w, z2 = b.z + b.d;
+    ctx.globalAlpha = alpha;
+    poly([P(x2, b.z, y1), P(x2, z2, y1), P(x2, z2, y), P(x2, b.z, y)], color(b.level, 1)); // правая грань
+    poly([P(b.x, z2, y1), P(x2, z2, y1), P(x2, z2, y), P(b.x, z2, y)], color(b.level, 2)); // левая грань
+    poly([P(b.x, b.z, y1), P(x2, b.z, y1), P(x2, z2, y1), P(b.x, z2, y1)], color(b.level, 0)); // верх
+    ctx.globalAlpha = 1;
+  }
+
+  function frame(t) {
+    var dt = Math.min(t - (last || t), 50); last = t;
+
+    // движение блока
+    if (cur) {
+      var top = stack[stack.length - 1];
+      var speed = Math.min(0.35 + score * 0.008, 0.85);
+      cur[cur.axis] += cur.dir * speed * dt;
+      if (cur[cur.axis] > top[cur.axis] + AMP) cur.dir = -1;
+      if (cur[cur.axis] < top[cur.axis] - AMP) cur.dir = 1;
+    }
+    // обломки
+    for (var i = debris.length - 1; i >= 0; i--) {
+      var d = debris[i]; d.vy += 0.0016 * dt; d.y -= d.vy * dt;
+      if (d.y < cam.y - 900) debris.splice(i, 1);
+    }
+    // камера
+    var tp = stack[stack.length - 1], f = 1 - Math.pow(0.004, dt / 1000);
+    cam.x += (tp.x + tp.w / 2 - cam.x) * f;
+    cam.z += (tp.z + tp.d / 2 - cam.z) * f;
+    cam.y += ((stack.length - 1) * BLOCK_H - cam.y) * f;
+
+    // фон
+    var g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#1a2050'); g.addColorStop(1, '#3a2466');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+    // башня (рисуем только видимые уровни)
+    var from = Math.max(0, stack.length - 22);
+    for (var s = from; s < stack.length; s++) box(stack[s], s * BLOCK_H, 1);
+    for (var j = 0; j < debris.length; j++) box(debris[j], debris[j].y, 0.9);
+    if (cur) box(cur, cur.level * BLOCK_H, 1);
+
+    // интерфейс
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff';
+    ctx.font = '700 ' + Math.round(H * 0.11) + 'px -apple-system, "SF Pro Display", Roboto, sans-serif';
+    ctx.fillText(score, W / 2, H * 0.17);
+    ctx.font = '400 ' + Math.round(Math.min(W, H) * 0.04) + 'px -apple-system, Roboto, sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,.6)';
+    ctx.fillText((over ? 'Игра окончена · тап, чтобы начать заново' : 'Тап, чтобы поставить') + '  ·  Рекорд ' + best, W / 2, H - 28 - (tg ? 0 : 0));
+
+    requestAnimationFrame(frame);
+  }
+
+  window.addEventListener('pointerdown', function (e) { e.preventDefault(); drop(); });
+  window.addEventListener('keydown', function (e) { if (e.code === 'Space') { e.preventDefault(); drop(); } });
+
+  reset();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
