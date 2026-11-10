@@ -8,10 +8,21 @@
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1f4a; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
   canvas { display: block; width: 100%; height: 100%; }
+  #ui { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; background: rgba(20, 16, 48, .72); color: #fff; font-family: -apple-system, "SF Pro Display", Roboto, sans-serif; text-align: center; padding: 24px; }
+  #ui.hidden { display: none; }
+  #title { font-size: clamp(34px, 11vw, 64px); font-weight: 800; line-height: 1.05; margin: 0; }
+  #sub { font-size: clamp(16px, 4.5vw, 22px); opacity: .7; margin: 0; }
+  #btn { margin-top: 10px; border: 0; border-radius: 999px; padding: 16px 44px; font-size: 20px; font-weight: 700; color: #fff; background: linear-gradient(135deg, #ff5fa2, #c13cd9); box-shadow: 0 8px 24px rgba(193, 60, 217, .45); cursor: pointer; }
+  #btn:active { transform: scale(.97); }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<div id="ui">
+  <h1 id="title">Люблю Настю</h1>
+  <p id="sub">Строй башню: тап — поставить блок</p>
+  <button id="btn">Начать</button>
+</div>
 <script>
 (function () {
   var tg = window.Telegram && Telegram.WebApp;
@@ -46,6 +57,22 @@
 
   // ---- состояние ----
   var stack, cur, debris, score, over, overAt, cam, last;
+  var state = 'start';                       // start | play | over
+  var ui = document.getElementById('ui'), uiTitle = document.getElementById('title'),
+      uiSub = document.getElementById('sub'), uiBtn = document.getElementById('btn');
+
+  function showOver() {
+    setTimeout(function () {
+      if (state !== 'over') return;
+      uiTitle.textContent = 'С тебя минет';
+      uiSub.textContent = 'Счёт: ' + score + '  ·  Рекорд: ' + best;
+      uiBtn.textContent = 'Начать заново';
+      ui.classList.remove('hidden');
+    }, 700);
+  }
+  uiBtn.addEventListener('click', function () {
+    reset(); state = 'play'; ui.classList.add('hidden');
+  });
 
   function color(level, shade) {
     var hue = (325 + level * 5) % 360;
@@ -69,7 +96,7 @@
   }
 
   function drop() {
-    if (over) { if (performance.now() - overAt > 500) reset(); return; }
+    if (state !== 'play' || over) return;
     var top = stack[stack.length - 1], a = cur.axis;
     var size = a === 'x' ? 'w' : 'd';
     var delta = cur[a] - top[a];
@@ -79,6 +106,7 @@
       debris.push({ x: cur.x, z: cur.z, w: cur.w, d: cur.d, level: cur.level, y: cur.level * BLOCK_H, vy: 0 });
       cur = null; over = true; overAt = performance.now();
       if (score > best) { best = score; saveBest(); }
+      state = 'over'; showOver();
       haptic('heavy');
       return;
     }
@@ -121,7 +149,26 @@
     poly([P(x2, b.z, y1), P(x2, z2, y1), P(x2, z2, y), P(x2, b.z, y)], color(b.level, 1)); // правая грань
     poly([P(b.x, z2, y1), P(x2, z2, y1), P(x2, z2, y), P(b.x, z2, y)], color(b.level, 2)); // левая грань
     poly([P(b.x, b.z, y1), P(x2, b.z, y1), P(x2, z2, y1), P(b.x, z2, y1)], color(b.level, 0)); // верх
+    // надпись на правой грани (вдоль z) и левой грани (вдоль x)
+    var o1 = P(x2, z2, y1), o2 = P(b.x, z2, y1);
+    faceText(o1, 0.866 * K, -0.5 * K, b.d);
+    faceText(o2, 0.866 * K, 0.5 * K, b.w);
     ctx.globalAlpha = 1;
+  }
+  var LABEL = 'люблю Настю';
+  function faceText(o, ux, uy, len) {
+    if (len < 24) return;
+    ctx.save();
+    ctx.transform(ux, uy, 0, K, o[0], o[1]);   // координаты грани: u — вдоль, v — вниз от верхнего края
+    var fs = BLOCK_H * 0.55;
+    ctx.font = '700 ' + fs + 'px -apple-system, Roboto, sans-serif';
+    var tw = ctx.measureText(LABEL).width;
+    var max = len * 0.9;
+    if (tw > max) { fs *= max / tw; ctx.font = '700 ' + fs + 'px -apple-system, Roboto, sans-serif'; tw = max; }
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,255,255,.88)';
+    ctx.fillText(LABEL, (len - tw) / 2, BLOCK_H / 2);
+    ctx.restore();
   }
 
   function frame(t) {
@@ -164,7 +211,7 @@
     ctx.fillText(score, W / 2, H * 0.17);
     ctx.font = '400 ' + Math.round(Math.min(W, H) * 0.04) + 'px -apple-system, Roboto, sans-serif';
     ctx.fillStyle = 'rgba(255,255,255,.6)';
-    ctx.fillText((over ? 'Игра окончена · тап, чтобы начать заново' : 'Тап, чтобы поставить') + '  ·  Рекорд ' + best, W / 2, H - 28 - (tg ? 0 : 0));
+    if (state === 'play') ctx.fillText('Тап, чтобы поставить  ·  Рекорд ' + best, W / 2, H - 28);
 
     requestAnimationFrame(frame);
   }
